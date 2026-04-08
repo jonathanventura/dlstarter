@@ -1,2 +1,2 @@
-from .model import fit_model
+from .model import *
 from .viz import plot_decision_regions
