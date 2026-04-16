@@ -1,6 +1,7 @@
 import tqdm
 import torch
 from torch import nn
+import numpy as np
 from torchmetrics import Accuracy, MeanSquaredError
 
 class Trainer:
@@ -11,7 +12,7 @@ class Trainer:
         self.metric = metric.to(device)
         self.device = device
 
-    def fit(self, dl_train, optimizer, dl_val=None, num_epochs=10, verbose=False):
+    def fit(self, dl_train, optimizer, dl_val=None, num_epochs=10, checkpoint_path=None, verbose=False):
         train_metrics = []
         val_metrics = []
         for epoch in range(num_epochs):
@@ -20,9 +21,8 @@ class Trainer:
                 batches = tqdm.tqdm(dl_train,desc=f'epoch {epoch+1}/{num_epochs}')
             else:
                 batches = dl_train
-            for batch in batches:
-                # unpack data
-                x_batch, y_batch = batch
+            for x_batch, y_batch in batches:
+                # move data to device
                 x_batch = x_batch.to(self.device)
                 y_batch = y_batch.to(self.device)
 
@@ -60,14 +60,28 @@ class Trainer:
                     y_pred = self.model(x_batch)
                     self.metric(y_pred,y_batch)
                 val_metric = self.metric.compute().item()
+                if checkpoint_path is not None:
+                    do_save = False
+                    if len(val_metrics) == 0:
+                        do_save = True
+                    else:
+                        do_save = (self.metric.higher_is_better and (val_metric > np.max(val_metrics))) or (not self.metric.higher_is_better and (val_metric < np.min(val_metrics)))
+                    
+                    if do_save:
+                        torch.save(self.model.state_dict(),checkpoint_path)
+                    
                 val_metrics.append(val_metric)
 
                 if verbose:
                     print(f'Epoch {epoch}: train {train_metric} val {val_metric}')
 
         if dl_val is None:
+            if checkpoint_path is not None:
+                torch.save(self.model.state_dict(),checkpoint_path)
             return train_metrics
         else:
+            if checkpoint_path is not None:
+                self.model.load_state_dict(torch.load(checkpoint_path))
             return train_metrics, val_metrics
 
 class ClassificationTrainer(Trainer):
