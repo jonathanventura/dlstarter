@@ -2,7 +2,7 @@ import tqdm
 import torch
 from torch import nn
 import numpy as np
-from torchmetrics import Accuracy, MeanSquaredError
+from torchmetrics import Accuracy, MeanSquaredError, MeanAbsoluteError
 
 class Trainer:
     def __init__(self, model, loss_fn, metric, device):
@@ -101,6 +101,85 @@ class RegressionTrainer(Trainer):
             metric = MeanSquaredError(),
             device = device
         )
+
+class AutoencoderTrainer:
+    def __init__(self, encoder, decoder, device, use_mae=False, activity_reg=0.):
+        super().__init__()
+        self.encoder = encoder.to(device)
+        self.decoder = decoder.to(device)
+        if use_mae:
+            self.loss_fn = nn.L1Loss().to(device)
+            self.metric = MeanAbsoluteError().to(device)
+        else:
+            self.loss_fn = nn.MSELoss().to(device)
+            self.metric = MeanSquaredError().to(device)
+        self.device = device
+        self.activity_reg = activity_reg
+
+    def fit(self, dl_train, optimizer, dl_val=None, num_epochs=10, verbose=False):
+        train_metrics = []
+        val_metrics = []
+        for epoch in range(num_epochs):
+            self.metric.reset()
+            if verbose:
+                batches = tqdm.tqdm(dl_train,desc=f'epoch {epoch+1}/{num_epochs}')
+            else:
+                batches = dl_train
+            for x_batch, y_batch in batches:
+                # move data to device
+                x_batch = x_batch.to(self.device)
+                y_batch = y_batch.to(self.device)
+
+                # compute model output and loss
+                h_pred = self.encoder(x_batch)
+                y_pred = self.decoder(h_pred)
+                loss = self.loss_fn(y_pred,y_batch)
+
+                # compute activity regularization
+                if self.activity_reg > 0:
+                    reg = torch.mean(torch.abs(h_pred))
+                    loss += self.activity_reg * reg
+
+                # compute metric for train batch
+                self.metric(y_pred,y_batch)
+
+                # update weights
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+            # compute average metric over train batches
+            train_metric = self.metric.compute().item()
+            train_metrics.append(train_metric)
+
+            val_metric = None
+            if dl_val is None:
+                if verbose:
+                    print(f'Epoch {epoch}: train {train_metric}')
+            else:
+                # compute metric on validation set
+                self.metric.reset()
+                if verbose:
+                    batches = tqdm.tqdm(dl_val,desc='validation')
+                else:
+                    batches = dl_val
+                for batch in batches:
+                    x_batch, y_batch = batch
+                    x_batch = x_batch.to(self.device)
+                    y_batch = y_batch.to(self.device)
+                    y_pred = self.decoder(self.encoder(x_batch))
+                    self.metric(y_pred,y_batch)
+                val_metric = self.metric.compute().item()                    
+                val_metrics.append(val_metric)
+
+                if verbose:
+                    print(f'Epoch {epoch}: train {train_metric} val {val_metric}')
+
+        if dl_val is None:
+            return train_metrics
+        else:
+            return train_metrics, val_metrics
+        
 
 def fit_model(
           model, opt, loss_fn, metric, device,

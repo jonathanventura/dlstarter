@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dlstarter_jonathanventura"
-version = "0.0.4"
+version = "0.0.5"
 authors = [
   { name="Jonathan Ventura", email="jventu09@calpoly.edu" },
 ]
@@ -21,7 +21,10 @@ dependencies = [
     "torch",
     "tqdm",
     "mlxtend",
-    "torchmetrics"
+    "torchmetrics",
+    "wget",
+    "numpy",
+    "scipy"
 ]
 
 [project.urls]
