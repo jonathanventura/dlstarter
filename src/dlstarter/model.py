@@ -5,7 +5,17 @@ import numpy as np
 from torchmetrics import Accuracy, MeanSquaredError, MeanAbsoluteError
 
 class Trainer:
+    """ Convenience wrapper to provide model fitting and evaluation functions. """
+
     def __init__(self, model, loss_fn, metric, device):
+        """ Create a Trainer object.
+
+            Arguments:
+                model: the model
+                loss_fn: loss function
+                metric: TorchMetrics metric object
+                device: Torch device e.g. cpu or cuda
+        """
         super().__init__()
         self.model = model.to(device)
         self.loss_fn = loss_fn.to(device)
@@ -13,6 +23,13 @@ class Trainer:
         self.device = device
 
     def evaluate(self, dl, verbose=False):
+        """ Compute the average metric over a dataset.
+            Arguments:
+                dl: dataloader
+                verbose: if True, will show a progress bar
+            Returns:
+                average metric value
+        """
         self.model.eval()
         self.metric.reset()
         if verbose:
@@ -28,6 +45,14 @@ class Trainer:
         return self.metric.compute().item()        
     
     def predict(self, dl, verbose=False):
+        """ Compute the model outputs for a dataset.
+
+            Arguments:
+                dl: dataloader
+                verbose: if True, will show a progress bar
+            Returns:
+                Numpy array containing the model outputs
+        """
         self.model.eval()
         self.metric.reset()
         if verbose:
@@ -43,6 +68,19 @@ class Trainer:
         return np.stack(preds)
 
     def fit(self, dl_train, optimizer, dl_val=None, num_epochs=10, checkpoint_path=None, verbose=False):
+        """ Run model training.
+
+            Arguments:
+                dl_train: training data loader
+                optimizer: optimizer pointing to the model parameters
+                dl_val: optional validation data loader, for computing metrics at end of each epoch
+                num_epochs: number of epochs
+                checkpoint_path: optional path for saving weights of best model
+                verbose: if True, will show progress bar for each epoch and report metrics during training
+            Returns:
+                train_metrics: training metric per epoch
+                val_metrics: validation metric per epoch (if dl_val provided)
+        """
         train_metrics = []
         val_metrics = []
         for epoch in range(num_epochs):
@@ -105,6 +143,7 @@ class Trainer:
             return train_metrics, val_metrics
 
 class ClassificationTrainer(Trainer):
+    """ Trainer subclass for classification models using cross-entropy loss and accuracy metric. """
     def __init__(self, model, num_classes, device):
         super().__init__(
             model = model,
@@ -114,6 +153,7 @@ class ClassificationTrainer(Trainer):
         )
 
 class RegressionTrainer(Trainer):
+    """ Trainer subclass for regression models using mean squared error loss and metric. """
     def __init__(self, model, device):
         super().__init__(
             model = model,
@@ -123,7 +163,17 @@ class RegressionTrainer(Trainer):
         )
 
 class AutoencoderTrainer:
+    """ Trainer for autoencoder models."""
     def __init__(self, encoder, decoder, device, use_mae=False, activity_reg=0.):
+        """ Create an AutoencoderTrainer object.
+        
+            Arguments:
+                encoder: encoder model
+                decoder: decoder model
+                device: Torch device
+                use_mae: if True, use mean absolute error instead of mean squared error
+                activity_reg: weight for L1 regularization on decoder output
+        """
         super().__init__()
         self.encoder = encoder.to(device)
         self.decoder = decoder.to(device)
@@ -137,6 +187,14 @@ class AutoencoderTrainer:
         self.activity_reg = activity_reg
         
     def encode(self, dl, verbose=False):
+        """ Compute output of encoder on a dataset.
+
+            Arguments:
+                dl: data loader
+                verbose: if True, will show a progress bar
+            Returns:
+                Numpy array of encoder outputs
+        """
         self.encoder.eval()
         if verbose:
             batches = tqdm.tqdm(dl,desc='predict')
@@ -151,6 +209,18 @@ class AutoencoderTrainer:
         return np.stack(preds)
     
     def fit(self, dl_train, optimizer, dl_val=None, num_epochs=10, verbose=False):
+        """ Train the autoencoder on a dataset.
+
+            Arguments:
+                dl_train: training data loader
+                optimizer: optimizer for training
+                dl_val: validation data loader
+                num_epochs: number of epochs
+                verbose: if True, show progress bar and metrics at end of each epoch
+            Returns:
+                train_metrics: training metric per epoch
+                val_metrics: validation metric per epoch (if dl_val provided)
+        """
         train_metrics = []
         val_metrics = []
         for epoch in range(num_epochs):
