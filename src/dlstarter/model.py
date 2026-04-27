@@ -290,6 +290,146 @@ class AutoencoderTrainer:
         else:
             return train_metrics, val_metrics
 
+def vae_loss_fn(x,y,z_mean,z_log_var,beta=1):
+    squared_error = (x-y)**2
+    reconstruction_loss = torch.sum(squared_error,(1,2,3))
+
+    kl_loss = 1 + z_log_var - z_mean**2 - torch.exp(z_log_var)
+    kl_loss = -0.5 * torch.sum(kl_loss, -1)
+
+    vae_loss = torch.mean(reconstruction_loss + beta * kl_loss)
+
+    return vae_loss
+
+class VariationalAutoencoderTrainer:
+    """ Trainer for variational autoencoder models."""
+    def __init__(self, encoder, decoder, device, beta=1):
+        """ Create a VariationalAutoencoderTrainer object.
+        
+            Arguments:
+                encoder: encoder model
+                decoder: decoder model
+                device: Torch device
+                beta: beta coefficient in loss function
+        """
+        super().__init__()
+        self.encoder = encoder.to(device)
+        self.decoder = decoder.to(device)
+        self.loss_fn = vae_loss_fn
+        self.metric = MeanSquaredError().to(device)
+        self.device = device
+        self.beta = beta
+        
+    def encode(self, dl, verbose=False):
+        """ Compute output of encoder on a dataset.
+
+            Arguments:
+                dl: data loader
+                verbose: if True, will show a progress bar
+            Returns:
+                Numpy array of encoder outputs
+        """
+        self.encoder.eval()
+        if verbose:
+            batches = tqdm.tqdm(dl,desc='predict')
+        else:
+            batches = dl
+        z_means = []
+        z_log_vars = []
+        for batch in batches:
+            x_batch, _ = batch
+            x_batch = x_batch.to(self.device)
+            z_mean,z_log_var = self.encoder(x_batch)
+            z_means.append(z_mean.detach().cpu().numpy())
+            z_log_vars.append(z_log_vars.detach().cpu().numpy())
+        return np.stack(z_means), np.stack(z_log_vars)
+    
+    def fit(self, dl_train, optimizer, dl_val=None, num_epochs=10, verbose=False):
+        """ Train the autoencoder on a dataset.
+
+            Arguments:
+                dl_train: training data loader
+                optimizer: optimizer for training
+                dl_val: validation data loader
+                num_epochs: number of epochs
+                verbose: if True, show progress bar and metrics at end of each epoch
+            Returns:
+                train_metrics: training metric per epoch
+                val_metrics: validation metric per epoch (if dl_val provided)
+        """
+        train_metrics = []
+        val_metrics = []
+        for epoch in range(num_epochs):
+            self.encoder.train()
+            self.decoder.train()
+            self.metric.reset()
+            if verbose:
+                batches = tqdm.tqdm(dl_train,desc=f'epoch {epoch+1}/{num_epochs}')
+            else:
+                batches = dl_train
+            for x_batch in batches:
+                if isinstance(x_batch,tuple) or isinstance(x_batch,list):
+                    x_batch = x_batch[0]
+                
+                # move data to device
+                x_batch = x_batch.to(self.device)
+
+                # compute model output and loss
+                z_mean, z_log_var = self.encoder(x_batch)
+
+                # sample latent vector z ~ q(z|x)
+                # using the "reparameterization trick"
+                b,d = z_mean.shape[:2]
+                epsilon = torch.randn(z_mean.shape).to(self.device)
+                z = z_mean + torch.exp(0.5 * z_log_var) * epsilon
+
+                x_pred = self.decoder(z)
+
+                loss = self.loss_fn(x_pred,x_batch,z_mean,z_log_var,self.beta)
+
+                # compute metric for train batch
+                self.metric(x_pred,x_batch)
+
+                # update weights
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+            # compute average metric over train batches
+            train_metric = self.metric.compute().item()
+            train_metrics.append(train_metric)
+
+            val_metric = None
+            if dl_val is None:
+                if verbose:
+                    print(f'Epoch {epoch}: train {train_metric}')
+            else:
+                # compute metric on validation set
+                self.encoder.eval()
+                self.decoder.eval()
+                self.metric.reset()
+                if verbose:
+                    batches = tqdm.tqdm(dl_val,desc='validation')
+                else:
+                    batches = dl_val
+                for x_batch in batches:
+                    if isinstance(x_batch,tuple) or isinstance(x_batch,list):
+                        x_batch = x_batch[0]
+                    x_batch = x_batch.to(self.device)
+                    z_mean,z_log_var = self.encoder(x_batch)
+                    x_pred = self.decoder(z_mean)
+                    self.metric(x_pred,x_batch)
+                val_metric = self.metric.compute().item()                    
+                val_metrics.append(val_metric)
+
+                if verbose:
+                    print(f'Epoch {epoch}: train {train_metric} val {val_metric}')
+
+        if dl_val is None:
+            return train_metrics
+        else:
+            return train_metrics, val_metrics
+
 def fit_model(
           model, opt, loss_fn, metric, device,
           dl_train, dl_val,
