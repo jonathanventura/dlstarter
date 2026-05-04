@@ -3,6 +3,7 @@ import torch
 from torch import nn
 import numpy as np
 from torchmetrics import Accuracy, MeanSquaredError, MeanAbsoluteError
+from matplotlib import pyplot as plt
 
 class Trainer:
     """ Convenience wrapper to provide model fitting and evaluation functions. """
@@ -429,6 +430,164 @@ class VariationalAutoencoderTrainer:
             return train_metrics
         else:
             return train_metrics, val_metrics
+
+class GenerativeAdversarialNetworkTrainer:
+    """ Trainer for generative adversarial network (GAN) models."""
+    def __init__(self, generator, discriminator, rand_fn, latent_dim, device, r1_penalty=None, wasserstein_weight_thresh=None):
+        """ Create a GenerativeAdversarialNetworkTrainer object.
+        
+            Arguments:
+                generator: generator model
+                discriminator: discriminator model
+                rand_fn: random number generator function
+                latent_dim: size of noise vector input
+                device: Torch device
+        """
+        super().__init__()
+        self.generator = generator.to(device)
+        self.discriminator = discriminator.to(device)
+        self.generator_metric = Accuracy(task='binary').to(device)
+        self.discriminator_metric = Accuracy(task='binary').to(device)
+        self.rand_fn = rand_fn
+        self.latent_dim = latent_dim
+        self.loss_fn = nn.BCEWithLogitsLoss()
+        self.device = device
+        self.r1_penalty = r1_penalty
+        self.wasserstein_weight_thresh = wasserstein_weight_thresh
+            
+    def fit(self, dl_train, g_optimizer, d_optimizer, latent_vectors=None, num_epochs=10, verbose=False):
+        """ Train the GAN on a dataset.
+
+            Arguments:
+                dl_train: training data loader
+                d_optimizer: optimizer for training generator
+                g_optimizer: optimizer for training discriminator
+                latent_vectors: latent vectors to inspect development of generator output during training [optional]
+                num_epochs: number of epochs
+                verbose: if True, show progress bar and metrics at end of each epoch
+            Returns:
+                generator_metrics: generator accuracy per epoch
+                discriminator_metrics: discriminator accuracy per epoch
+        """
+        generator_metrics = []
+        discriminator_metrics = []
+        for epoch in range(num_epochs):
+            self.generator.train()
+            self.discriminator.train()
+            self.generator_metric.reset()
+            self.discriminator_metric.reset()
+            if verbose:
+                batches = tqdm.tqdm(dl_train,desc=f'epoch {epoch+1}/{num_epochs}')
+            else:
+                batches = dl_train
+            for x_batch in batches:
+                if isinstance(x_batch,tuple) or isinstance(x_batch,list):
+                    x_batch = x_batch[0]
+                
+                # move data to device
+                x_real = x_batch.to(self.device)
+
+                # make "real" labels
+                y_real = torch.ones(len(x_batch),1).to(self.device)
+
+                #### discriminator update ###
+
+                # make "fake" data
+                x_fake = self.rand_fn(len(x_batch),self.latent_dim).to(self.device)
+                with torch.no_grad():
+                    x_fake = self.generator(x_fake)
+                y_fake = torch.zeros(len(x_batch),1).to(self.device)
+                
+                # compute discriminator loss
+                disc_real = self.discriminator(x_real)
+                disc_fake = self.discriminator(x_fake)
+                disc_pred = torch.cat([disc_real,disc_fake],dim=0)
+                disc_label = torch.cat([y_real,y_fake],dim=0)
+                disc_loss = self.loss_fn(disc_pred,disc_label)
+
+                if self.r1_penalty is not None:
+                    x_real_with_grad = x_real.detach().clone().requires_grad_(True)
+                    d = torch.sum(self.discriminator(x_real_with_grad))
+                    d_grad = torch.autograd.grad(d,x_real_with_grad)[0]
+                    r1_term = torch.mean(self.r1_penalty*0.5*torch.sum(d_grad**2,dim=1))
+                    disc_loss += r1_term
+
+                # update discriminator
+                d_optimizer.zero_grad()
+                disc_loss.backward()
+                d_optimizer.step()
+
+                if self.wasserstein_weight_thresh is not None:
+                    with torch.no_grad():
+                        for param in self.discriminator.parameters():
+                            param.clamp_(-self.wasserstein_weight_thresh, self.wasserstein_weight_thresh)
+
+                # compute discriminator metric
+                self.discriminator_metric(disc_pred,disc_label)
+
+                ### generator update ###
+
+                # make "fake" data
+                x_fake = self.rand_fn(len(x_batch),self.latent_dim).to(self.device)
+                x_fake = self.generator(x_fake)
+
+                # compute generator loss
+                disc_fake = self.discriminator(x_fake)
+                gen_loss = self.loss_fn(disc_fake,y_real)
+
+                # update generator
+                g_optimizer.zero_grad()
+                gen_loss.backward()
+                g_optimizer.step()
+
+                # compute generator metric
+                self.generator_metric(disc_fake,y_real)
+
+            # compute average metric over train batches
+            generator_metric = self.generator_metric.compute().item()
+            discriminator_metric = self.discriminator_metric.compute().item()
+            generator_metrics.append(generator_metric)
+            discriminator_metrics.append(discriminator_metric)
+
+            if verbose:
+                print(f'Epoch {epoch}: generator {generator_metric} discriminator {discriminator_metric}')
+
+            if latent_vectors is not None:
+                self.generator.eval()
+                x_pred = self.generator(latent_vectors.to(self.device)).detach().cpu().numpy()
+                for i in range(len(x_pred)):
+                    plt.subplot(1,len(x_pred),i+1)
+                    plt.imshow(x_pred[i].squeeze())
+                    plt.axis('off')
+                plt.show()
+
+        return generator_metrics, discriminator_metrics
+
+def predict(model, dl, device, verbose=False):
+    """ Run a model on a data loader and collect outputs in a Numpy array
+
+        Arguments:
+            dl: data loader
+            verbose: if True, will show a progress bar
+        Returns:
+            Numpy array of outputs
+    """
+    model.eval()
+
+    if verbose:
+        batches = tqdm.tqdm(dl,desc='predict')
+    else:
+        batches = dl
+    outputs = []
+    for batch in batches:
+        if isinstance(x_batch,tuple) or isinstance(x_batch,list):
+            x_batch = batch[0]
+        else:
+            x_batch = batch
+        x_batch = x_batch.to(device)
+        x_out = model(x_batch)
+        outputs.append(x_out.detach().cpu().numpy())
+    return np.stack(outputs)
 
 def fit_model(
           model, opt, loss_fn, metric, device,
