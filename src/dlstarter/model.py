@@ -563,6 +563,133 @@ class GenerativeAdversarialNetworkTrainer:
 
         return generator_metrics, discriminator_metrics
 
+class DDPMTrainer:
+    """ Trainer for Denoising Diffusion Probabilistic Model (DDPM) models."""
+    def __init__(self, model, betas, device):
+        """ Create a GenerativeAdversarialNetworkTrainer object.
+        
+            Arguments:
+                model: reverse process model
+                betas: list of beta values
+                device: Torch device
+        """
+        super().__init__()
+        self.model = model.to(device)
+        self.loss_fn = nn.MSELoss().to(device)
+        self.metric = MeanSquaredError().to(device)
+        
+        self.T = len(betas)
+        sigmas = np.sqrt(betas)
+        alphas = 1 - betas
+        alphas_cumprod = np.cumprod(alphas,axis=-1)
+
+        self.betas = torch.tensor(betas,dtype=torch.float32).to(device)
+        self.sigmas = torch.tensor(sigmas,dtype=torch.float32).to(device)
+        self.alphas = torch.tensor(alphas,dtype=torch.float32).to(device)
+        self.alphas_cumprod = torch.tensor(alphas_cumprod,dtype=torch.float32).to(device)
+
+        self.device = device
+
+    def sample(self, shape, verbose=False):
+        """ Samples from the diffusion model.
+
+        Arguments:
+            model: reverse process model
+            shape: shape of data to be sampled
+        Returns:
+            samples
+        """
+        # set model to evaluation mode for efficiency
+        self.model.eval()
+
+        # sample normally-distributed random noise (x_T)
+        x = torch.randn(shape).to(self.device)
+
+        # iterate through timesteps from T-1 to 0
+        if verbose:
+            timesteps = range(self.T-1,-1,-1)
+        else:
+            timesteps = tqdm.trange(self.T-1,-1,-1)
+
+        ones = torch.ones(shape[0],dtype=torch.long).to(self.device)
+
+        for t in timesteps:
+            # sample noise unless at final step (which is deterministic)
+            z = torch.randn(shape).to(self.device) if t > 0 else torch.zeros(shape).to(self.device)
+
+            # estimate correction using model conditioned on timestep
+            with torch.no_grad():
+                eps = self.model(x,ones*t)
+
+                # apply update formula
+                sigma = self.sigmas[t]
+                a = self.alphas[t]
+                a_bar = self.alphas_cumprod[t]
+                x = 1/torch.sqrt(a)*(x - (1-a)/torch.sqrt(1-a_bar)*eps)+sigma*z
+  
+        return x
+            
+    def fit(self, dl_train, optimizer, noise_samples=None, num_epochs=10, verbose=False):
+        """ Train the model on a dataset.
+
+            Arguments:
+                dl_train: training data loader
+                optimizer: optimizer for training model
+                noise_samples: noise samples to inspect development of model output during training [optional]
+                num_epochs: number of epochs
+                verbose: if True, show progress bar and metrics at end of each epoch
+            Returns:
+                losses: loss per epoch
+        """
+        train_metrics = []
+        if verbose:
+            pbar = tqdm.tqdm(num_epochs,desc='DDPM training')
+        for epoch in range(num_epochs):
+            self.model.train()
+            avg_loss = 0
+            for x_batch in dl_train:
+                if isinstance(x_batch,tuple) or isinstance(x_batch,list):
+                    x_batch = x_batch[0]
+                
+                # get batch size
+                B = len(x_batch)
+
+                # move data to device
+                x_batch = x_batch.to(self.device)
+
+                # sample random timesteps
+                t = torch.randint(self.T,size=(B,)).to(self.device)
+
+                # sample random noise
+                noise = torch.randn(x_batch.shape).to(self.device)
+
+                # compute x_t
+                at = self.alphas_cumprod[t].reshape([-1]+[1]*(len(x_batch.shape)-1)).to(self.device)
+                inputs = torch.sqrt(at) * x_batch + torch.sqrt(1-at)*noise
+
+                # compute model output (estimate of eps)
+                est_noise = self.model(inputs,t)
+
+                # compute loss
+                loss = self.loss_fn(est_noise, noise)
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                # compute metric
+                self.metric(est_noise, noise)
+
+            # compute average metric over train batches
+            train_metric = self.metric.compute().item()
+            train_metrics.append(train_metric)
+
+            if verbose:
+                pbar.update(1)
+                pbar.set_description(f"{train_metric}")
+
+        return train_metrics
+    
 def predict(model, dl, device, verbose=False):
     """ Run a model on a data loader and collect outputs in a Numpy array
 
