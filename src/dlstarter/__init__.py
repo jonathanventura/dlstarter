@@ -1,3 +1,3 @@
 from .model import *
-from .viz import plot_decision_regions
+from .viz import *
 from .datasets import *
