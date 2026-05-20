@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dlstarter_jonathanventura"
-version = "0.0.10"
+version = "0.0.14"
 authors = [
   { name="Jonathan Ventura", email="jventu09@calpoly.edu" },
 ]
@@ -25,7 +25,9 @@ dependencies = [
     "wget",
     "numpy",
     "scipy",
-    "tqdm"
+    "tqdm",
+    "matplotlib",
+    "ipywidgets"
 ]
 
 [project.urls]

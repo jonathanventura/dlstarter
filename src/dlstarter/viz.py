@@ -1,5 +1,4 @@
-from matplotlib import rc
-rc('animation', html='jshtml')
+from ipywidgets import interact, IntSlider
 
 import torch
 import mlxtend.plotting
@@ -17,12 +16,9 @@ class ModelAdapter:
 def plot_decision_regions(model,x,y):
   mlxtend.plotting.plot_decision_regions(x, y, clf=ModelAdapter(model))
 
-def show_video(images,captions):
-    """ Show a sequence of images as an interactive plot. """
-    fig = plt.figure()
-    ax = plt.axes()
+def show_video(images,captions=None):
     def f(i):
-        ax.imshow(images[i])
-        ax.set_title(captions[i])
-    anim = animation.FuncAnimation(fig, f, frames=len(images), blit=False, repeat=True)
-    return anim
+        plt.imshow(images[i])
+        if captions is not None:
+            plt.title(captions[i])
+    return interact(f, i=IntSlider(min=0, max=len(images)-1, step=1, value=0))
